@@ -1,7 +1,18 @@
 const mongoose = require("mongoose");
 const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, ".env") });
-require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+function loadEnvironmentFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const values = dotenv.parse(fs.readFileSync(filePath));
+  for (const [key, value] of Object.entries(values)) {
+    if (!process.env[key] && value) process.env[key] = value;
+  }
+}
+
+loadEnvironmentFile(path.join(__dirname, "..", ".env"));
+loadEnvironmentFile(path.join(__dirname, ".env"));
 const connectDB = require('./db/connection');
 
 // Define Schemas

@@ -111,17 +111,132 @@ function Shell({ user, onLogout, children }) {
 
 function LoginPage({ onLogin }) {
   const navigate = useNavigate();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [message, setMessage] = useState('');
+  const [activeTab, setActiveTab] = useState('signin');
+  const [signInData, setSignInData] = useState({ username: '', password: '', accountType: 'staff', rememberMe: false });
+  const [signUpData, setSignUpData] = useState({ fullName: '', email: '', phone: '', password: '', confirmPassword: '' });
+  const [showPassword, setShowPassword] = useState(false);
+  const [showSignUpPassword, setShowSignUpPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotStep, setForgotStep] = useState('request');
+  const [forgotData, setForgotData] = useState({ username: '', otp: '', newPassword: '', confirmPassword: '' });
 
-  async function handleLogin(event) {
+  useEffect(() => {
+    const remembered = localStorage.getItem('rememberedUsername');
+    if (remembered) {
+      setSignInData((prev) => ({ ...prev, username: remembered, rememberMe: true }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4200);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  function showToastMessage(type, text) {
+    setToast({ type, text });
+  }
+
+  function handleTabChange(tab) {
+    setActiveTab(tab);
+    setToast(null);
+  }
+
+  function handleSignInChange(event) {
+    const { name, value, type, checked } = event.target;
+    setSignInData((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+  }
+
+  function handleSignUpChange(event) {
+    const { name, value } = event.target;
+    setSignUpData((prev) => ({ ...prev, [name]: value }));
+  }
+
+  function handleForgotChange(event) {
+    const { name, value } = event.target;
+    setForgotData((prev) => ({ ...prev, [name]: value }));
+  }
+
+  function openForgotPassword() {
+    setForgotMode(true);
+    setForgotStep('request');
+    setForgotData((prev) => ({ ...prev, username: signInData.username.trim() }));
+    setToast(null);
+  }
+
+  function closeForgotPassword(preserveToast = false) {
+    setForgotMode(false);
+    setForgotStep('request');
+    if (!preserveToast) setToast(null);
+  }
+
+  async function requestPasswordReset(event) {
     event.preventDefault();
-    setMessage('');
+    if (!forgotData.username.trim()) {
+      showToastMessage('error', 'Enter your email or username first.');
+      return;
+    }
 
-    if (!username || !password) {
-      setMessage('Enter username and password');
+    try {
+      setLoading(true);
+      const data = await request('/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify({ username: forgotData.username.trim() })
+      });
+      setForgotStep('reset');
+      showToastMessage(data.otp ? 'info' : 'success', data.otp ? `OTP: ${data.otp}` : (data.message || 'Check your email or phone for the OTP.'));
+    } catch (error) {
+      showToastMessage('error', error.message || 'Unable to start password reset.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resetPassword(event) {
+    event.preventDefault();
+    if (!forgotData.otp || !forgotData.newPassword || !forgotData.confirmPassword) {
+      showToastMessage('error', 'Enter the OTP and complete both password fields.');
+      return;
+    }
+    if (forgotData.newPassword !== forgotData.confirmPassword) {
+      showToastMessage('error', 'Passwords do not match.');
+      return;
+    }
+    if (forgotData.newPassword.length < 8) {
+      showToastMessage('error', 'Password must be at least 8 characters.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const data = await request('/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: forgotData.username.trim(),
+          otp: forgotData.otp.trim(),
+          newPassword: forgotData.newPassword
+        })
+      });
+      showToastMessage('success', data.message || 'Password updated. Please sign in.');
+      setSignInData((prev) => ({ ...prev, username: forgotData.username.trim(), password: '' }));
+      closeForgotPassword(true);
+    } catch (error) {
+      showToastMessage('error', error.message || 'Unable to reset password.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSignIn(event) {
+    event.preventDefault();
+    setToast(null);
+
+    const { username, password, rememberMe } = signInData;
+    if (!username.trim() || !password) {
+      showToastMessage('error', 'Please enter your email/username and password.');
       return;
     }
 
@@ -129,60 +244,340 @@ function LoginPage({ onLogin }) {
       setLoading(true);
       const data = await request('/login', {
         method: 'POST',
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username: username.trim(), password, role: signInData.accountType })
       });
 
       if (!data || !data.role) {
-        setMessage(data?.message || 'Invalid credentials');
+        showToastMessage('error', data?.message || 'Invalid login credentials.');
         return;
+      }
+
+      if (rememberMe) {
+        localStorage.setItem('rememberedUsername', username.trim());
+      } else {
+        localStorage.removeItem('rememberedUsername');
       }
 
       saveUser(data);
       onLogin(data);
       navigate(data.role === 'admin' ? '/admin' : '/dashboard');
     } catch (error) {
-      setMessage(error.message);
+      showToastMessage('error', error.message || 'Unable to sign in.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSignUp(event) {
+    event.preventDefault();
+    setToast(null);
+
+    const { fullName, email, phone, password, confirmPassword } = signUpData;
+
+    if (!fullName.trim() || !email.trim() || !password || !confirmPassword) {
+      showToastMessage('error', 'Please complete all required sign up fields.');
+      return;
+    }
+
+    if (!/^[\w-.]+@([\w-]+\.)+[\w-]{2,4}$/.test(email.trim())) {
+      showToastMessage('error', 'Enter a valid email address.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showToastMessage('error', 'Passwords do not match.');
+      return;
+    }
+
+    if (password.length < 8) {
+      showToastMessage('error', 'Password must be at least 8 characters.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      await request('/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: email.trim(),
+          password,
+          name: fullName.trim(),
+          email: email.trim(),
+          phone: phone.trim(),
+          role: 'staff'
+        })
+      });
+
+      showToastMessage('success', 'Account created successfully. Please sign in.');
+      setActiveTab('signin');
+      setSignInData((prev) => ({ ...prev, username: email.trim() }));
+      setSignUpData({ fullName: '', email: '', phone: '', password: '', confirmPassword: '' });
+    } catch (error) {
+      showToastMessage('error', error.message || 'Registration failed.');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="hero-page">
-      <section className="hero-copy">
-        <p className="eyebrow">Smart medical store</p>
-        <h1>Modern pharmacy control panel.</h1>
-        <p>
-          Clean UI, real backend data, and role-based pages for staff and admin. This version is designed
-          to feel like a real client project instead of a demo page.
-        </p>
-        <div className="hero-badges">
-          <span>Real-time inventory</span>
-          <span>Staff workflow</span>
-          <span>Billing & attendance</span>
-        </div>
-        <div className="hero-metrics">
-          <div>
-            <strong>24/7</strong>
-            <span>live store access</span>
-          </div>
-          <div>
-            <strong>Role</strong>
-            <span>based routing</span>
-          </div>
-        </div>
-      </section>
+    <div className="auth-landing">
+      <div className="auth-landing__overlay" />
+      <div className="floating-icon icon-pill" aria-hidden="true">
+        <svg viewBox="0 0 48 48" fill="none"><path d="M34.5 13.5L26 22m0 0L17.5 13.5M26 22l8.5 8.5M26 22L17.5 30.5" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/><path opacity=".25" d="M9.5 12.5c-5.5 5.5-5.5 14.4 0 19.9s14.4 5.5 19.9 0 5.5-14.4 0-19.9-14.4-5.5-19.9 0Z" fill="white"/></svg>
+      </div>
+      <div className="floating-icon icon-cross" aria-hidden="true">
+        <svg viewBox="0 0 48 48" fill="none"><path d="M24 12v24M12 24h24" stroke="white" strokeWidth="4" strokeLinecap="round"/></svg>
+      </div>
+      <div className="floating-icon icon-prescription" aria-hidden="true">
+        <svg viewBox="0 0 48 48" fill="none"><path d="M32 12H16a4 4 0 0 0-4 4v16a4 4 0 0 0 4 4h16a4 4 0 0 0 4-4V16a4 4 0 0 0-4-4Z" stroke="white" strokeWidth="3"/><path d="M20 20h8M20 26h8M20 32h8" stroke="white" strokeWidth="3" strokeLinecap="round"/></svg>
+      </div>
+      <div className="floating-icon icon-stethoscope" aria-hidden="true">
+        <svg viewBox="0 0 48 48" fill="none"><path d="M18 20a6 6 0 0 1 12 0v8" stroke="white" strokeWidth="3" strokeLinecap="round"/><path d="M18 28a10 10 0 0 1-10 10v4a4 4 0 0 0 8 0v-4a6 6 0 0 1 12 0v4a4 4 0 0 0 8 0v-4a10 10 0 0 1-10-10" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </div>
 
-      <section className="card auth-card">
-        <h2>Secure sign in</h2>
-        <p className="card-subtitle">Use your existing backend account to enter the dashboard.</p>
-        <form onSubmit={handleLogin} className="stack">
-          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" autoComplete="username" />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" autoComplete="current-password" />
-          <button type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Enter dashboard'}</button>
-        </form>
-        {message ? <p className="message error">{message}</p> : <p className="message">Use your existing account to enter the store dashboard.</p>}
-      </section>
+      <div className="auth-landing__content">
+        <section className="hero-panel">
+          <div className="brand-logo">PF</div>
+          <p className="eyebrow hero-eyebrow">PharmaFlow</p>
+          <h1>Healthcare pharmacy operations, reimagined.</h1>
+          <p className="hero-copy">Power your pharmacy with secure inventory, billing, patient workflows, and rapid analytics — all in a premium healthcare interface.</p>
+        </section>
+
+        <section className="auth-card card-glass">
+          <div className="card-header">
+            <div>
+              <div className="auth-logo">PF</div>
+              <div>
+                <p className="eyebrow">Welcome Back</p>
+                <h2>Secure access to your pharmacy suite.</h2>
+              </div>
+            </div>
+          </div>
+
+          <div className="auth-tabs" role="tablist" aria-label="Authentication tabs">
+            <button className={`auth-tab ${activeTab === 'signin' ? 'active' : ''}`} type="button" onClick={() => handleTabChange('signin')}>
+              Sign In
+            </button>
+            <button className={`auth-tab ${activeTab === 'signup' ? 'active' : ''}`} type="button" onClick={() => handleTabChange('signup')}>
+              Sign Up
+            </button>
+          </div>
+
+          {activeTab === 'signin' && !forgotMode ? (
+            <form className="auth-form" onSubmit={handleSignIn}>
+              <div className="input-group">
+                <label htmlFor="signin-username">Email or Username</label>
+                <div className="input-field">
+                  <span className="input-icon">@</span>
+                  <input
+                    id="signin-username"
+                    name="username"
+                    type="text"
+                    value={signInData.username}
+                    onChange={handleSignInChange}
+                    placeholder="you@example.com"
+                    autoComplete="username"
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="signin-account-type">Account Type</label>
+                <div className="input-field">
+                  <span className="input-icon">+</span>
+                  <select
+                    id="signin-account-type"
+                    name="accountType"
+                    value={signInData.accountType}
+                    onChange={handleSignInChange}
+                  >
+                    <option value="staff">Staff</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="signin-password">Password</label>
+                <div className="input-field">
+                  <span className="input-icon">*</span>
+                  <input
+                    id="signin-password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={signInData.password}
+                    onChange={handleSignInChange}
+                    placeholder="Enter password"
+                    autoComplete="current-password"
+                  />
+                  <button type="button" className="icon-button" onClick={() => setShowPassword((prev) => !prev)}>
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="form-meta">
+                <label className="checkbox-field">
+                  <input
+                    name="rememberMe"
+                    type="checkbox"
+                    checked={signInData.rememberMe}
+                    onChange={handleSignInChange}
+                  />
+                  Remember Me
+                </label>
+                <button type="button" className="link-button" onClick={openForgotPassword}>Forgot Password?</button>
+              </div>
+
+              <button type="submit" className="primary-button" disabled={loading}>
+                {loading ? 'Signing in...' : 'Login to your account'}
+              </button>
+            </form>
+          ) : activeTab === 'signin' && forgotMode ? (
+            <form className="auth-form" onSubmit={forgotStep === 'request' ? requestPasswordReset : resetPassword}>
+              <div>
+                <p className="eyebrow">Account recovery</p>
+                <h3>{forgotStep === 'request' ? 'Request a reset code' : 'Create a new password'}</h3>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="forgot-username">Email or Username</label>
+                <div className="input-field">
+                  <span className="input-icon">@</span>
+                  <input id="forgot-username" name="username" type="text" value={forgotData.username} onChange={handleForgotChange} autoComplete="username" />
+                </div>
+              </div>
+
+              {forgotStep === 'reset' ? (
+                <>
+                  <div className="input-group">
+                    <label htmlFor="forgot-otp">OTP</label>
+                    <div className="input-field">
+                      <span className="input-icon">#</span>
+                      <input id="forgot-otp" name="otp" type="text" value={forgotData.otp} onChange={handleForgotChange} inputMode="numeric" autoComplete="one-time-code" />
+                    </div>
+                  </div>
+                  <div className="input-group">
+                    <label htmlFor="forgot-new-password">New Password</label>
+                    <div className="input-field">
+                      <span className="input-icon">*</span>
+                      <input id="forgot-new-password" name="newPassword" type="password" value={forgotData.newPassword} onChange={handleForgotChange} autoComplete="new-password" />
+                    </div>
+                  </div>
+                  <div className="input-group">
+                    <label htmlFor="forgot-confirm-password">Confirm New Password</label>
+                    <div className="input-field">
+                      <span className="input-icon">*</span>
+                      <input id="forgot-confirm-password" name="confirmPassword" type="password" value={forgotData.confirmPassword} onChange={handleForgotChange} autoComplete="new-password" />
+                    </div>
+                  </div>
+                </>
+              ) : null}
+
+              <button type="submit" className="primary-button" disabled={loading}>
+                {loading ? 'Please wait...' : forgotStep === 'request' ? 'Send reset code' : 'Reset password'}
+              </button>
+              <button type="button" className="link-button" onClick={closeForgotPassword}>Back to sign in</button>
+            </form>
+          ) : (
+            <form className="auth-form" onSubmit={handleSignUp}>
+              <div className="input-group">
+                <label htmlFor="signup-fullname">Full Name</label>
+                <div className="input-field">
+                  <span className="input-icon">👤</span>
+                  <input
+                    id="signup-fullname"
+                    name="fullName"
+                    type="text"
+                    value={signUpData.fullName}
+                    onChange={handleSignUpChange}
+                    placeholder="Firstname Lastname"
+                    autoComplete="name"
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="signup-email">Email Address</label>
+                <div className="input-field">
+                  <span className="input-icon">@</span>
+                  <input
+                    id="signup-email"
+                    name="email"
+                    type="email"
+                    value={signUpData.email}
+                    onChange={handleSignUpChange}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="signup-phone">Phone Number</label>
+                <div className="input-field">
+                  <span className="input-icon">☎</span>
+                  <input
+                    id="signup-phone"
+                    name="phone"
+                    type="tel"
+                    value={signUpData.phone}
+                    onChange={handleSignUpChange}
+                    placeholder="+1 234 567 890"
+                    autoComplete="tel"
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="signup-password">Password</label>
+                <div className="input-field">
+                  <span className="input-icon">*</span>
+                  <input
+                    id="signup-password"
+                    name="password"
+                    type={showSignUpPassword ? 'text' : 'password'}
+                    value={signUpData.password}
+                    onChange={handleSignUpChange}
+                    placeholder="Create password"
+                    autoComplete="new-password"
+                  />
+                  <button type="button" className="icon-button" onClick={() => setShowSignUpPassword((prev) => !prev)}>
+                    {showSignUpPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label htmlFor="signup-confirm-password">Confirm Password</label>
+                <div className="input-field">
+                  <span className="input-icon">*</span>
+                  <input
+                    id="signup-confirm-password"
+                    name="confirmPassword"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    value={signUpData.confirmPassword}
+                    onChange={handleSignUpChange}
+                    placeholder="Confirm password"
+                    autoComplete="new-password"
+                  />
+                  <button type="button" className="icon-button" onClick={() => setShowConfirmPassword((prev) => !prev)}>
+                    {showConfirmPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </div>
+
+              <button type="submit" className="primary-button" disabled={loading}>
+                {loading ? 'Creating account...' : 'Create Account'}
+              </button>
+            </form>
+          )}
+        </section>
+      </div>
+
+      {toast ? (
+        <div className={`toast toast-${toast.type}`}>{toast.text}</div>
+      ) : null}
     </div>
   );
 }
@@ -800,10 +1195,14 @@ function App() {
     setUser(null);
   }
 
+  if (!user) {
+    return <LoginPage onLogin={setUser} />;
+  }
+
   return (
     <Shell user={user} onLogout={handleLogout}>
       <Routes>
-        <Route path="/" element={user ? <Navigate to={user.role === 'admin' ? '/admin' : '/dashboard'} replace /> : <LoginPage onLogin={setUser} />} />
+        <Route path="/" element={<Navigate to={user.role === 'admin' ? '/admin' : '/dashboard'} replace />} />
         <Route path="/dashboard" element={<RequireAuth user={user}><RequireRole user={user} role="staff"><DashboardPage /></RequireRole></RequireAuth>} />
         <Route path="/admin" element={<RequireAuth user={user}><RequireRole user={user} role="admin"><AdminPage /></RequireRole></RequireAuth>} />
         <Route path="/attendance" element={<RequireAuth user={user}><RequireRole user={user} role="staff"><AttendancePage user={user} /></RequireRole></RequireAuth>} />

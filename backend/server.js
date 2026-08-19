@@ -3,7 +3,11 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const path = require('path');
+const fs = require('fs');
+require("dotenv").config({ path: path.join(__dirname, '.env') });
 require("dotenv").config({ path: path.join(__dirname, '..', '.env') });
+
+const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
 
@@ -78,7 +82,7 @@ async function sendOtpSms(user, otp) {
 }
 
 // Middleware
-// CORS configuration - allow specific frontend origin(s) via env or allow all for local testing
+// CORS configuration - allow specific frontend origin(s) via env, plus localhost/Netlify defaults.
 const rawFrontendOrigins = process.env.FRONTEND_ORIGINS; // comma-separated list, or undefined
 let allowedOrigins = null;
 if (rawFrontendOrigins && rawFrontendOrigins.trim()) {
@@ -88,26 +92,62 @@ if (rawFrontendOrigins && rawFrontendOrigins.trim()) {
   allowedOrigins = true;
 }
 
+function isLocalOrNetlifyOrigin(origin) {
+  try {
+    const parsedOrigin = new URL(origin);
+    const hostname = parsedOrigin.hostname.toLowerCase();
+
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') {
+      return true;
+    }
+
+    return hostname.endsWith('.netlify.app') || hostname === 'netlify.app';
+  } catch (error) {
+    return false;
+  }
+}
+
 const corsOptions = {
   origin: function(origin, callback) {
     if (!origin) return callback(null, true); // allow non-browser tools like curl
-    if (allowedOrigins === true || (Array.isArray(allowedOrigins) && allowedOrigins.indexOf(origin) !== -1)) {
+    if (allowedOrigins === true || (Array.isArray(allowedOrigins) && allowedOrigins.indexOf(origin) !== -1) || isLocalOrNetlifyOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
 };
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 // allow larger JSON payloads to support base64 images (photos)
 app.use(express.json({ limit: '5mb' }));
+app.use('/api/upload', uploadRoutes);
 
-// Serve frontend static files (resolve absolute path)
-const frontendStatic = path.join(__dirname, '..', 'frontend', 'public');
+// Serve frontend static files (resolve absolute path).
+// Prefer the production `dist` output, then `public`, then the frontend root.
+const frontendRoot = path.join(__dirname, '..', 'frontend');
+const candidates = [
+  path.join(frontendRoot, 'dist'),
+  path.join(frontendRoot, 'public'),
+  frontendRoot
+];
+
+let frontendStatic = candidates.find(dir => {
+  try {
+    return fs.existsSync(path.join(dir, 'index.html'));
+  } catch (e) {
+    return false;
+  }
+});
+
+if (!frontendStatic) {
+  console.warn('⚠️ No frontend index.html found in dist/public/frontend root; defaulting to frontend/public.');
+  frontendStatic = path.join(frontendRoot, 'public');
+}
+
 app.use(express.static(frontendStatic));
 
 // Health endpoint
@@ -255,8 +295,10 @@ const Bill = mongoose.model("Bill", billSchema);
 // LOGIN
 app.post("/login", async (req, res) => {
   try {
-    const { username, password } = req.body;
-    const user = await User.findOne({ username, password });
+    const { username, password, role } = req.body;
+    const query = { username, password };
+    if (role === 'admin' || role === 'staff') query.role = role;
+    const user = await User.findOne(query);
     
     if (user) {
       res.json(user);
@@ -264,6 +306,10 @@ app.post("/login", async (req, res) => {
       res.json({ message: "Invalid login" });
     }
   } catch (err) {
+    if (mongoose.connection.readyState !== 1) {
+      console.error('Login database unavailable:', err.name || err.code || 'UnknownError');
+      return res.status(503).json({ message: "Login is temporarily unavailable because the database cannot be reached." });
+    }
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -331,6 +377,10 @@ app.post("/forgot-password", async (req, res) => {
 
     res.json(response);
   } catch (err) {
+    if (mongoose.connection.readyState !== 1) {
+      console.error('Forgot-password database unavailable:', err.name || err.code || 'UnknownError');
+      return res.status(503).json({ message: "Password recovery is temporarily unavailable because the database cannot be reached." });
+    }
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -363,6 +413,10 @@ app.post("/reset-password", async (req, res) => {
 
     res.json({ success: true, message: "Password updated" });
   } catch (err) {
+    if (mongoose.connection.readyState !== 1) {
+      console.error('Reset-password database unavailable:', err.name || err.code || 'UnknownError');
+      return res.status(503).json({ message: "Password reset is temporarily unavailable because the database cannot be reached." });
+    }
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -370,7 +424,7 @@ app.post("/reset-password", async (req, res) => {
 // REGISTER (for staff)
 app.post("/register", async (req, res) => {
   try {
-    const { username, password, role } = req.body;
+    const { username, password, role, name, email, phone } = req.body;
     
     if (!username || !password) {
       return res.status(400).json({ message: "Username and password required" });
@@ -384,12 +438,28 @@ app.post("/register", async (req, res) => {
     const newUser = new User({
       username,
       password,
-      role: role || "staff"
+      role: role || "staff",
+      name,
+      email,
+      phone
     });
 
     await newUser.save();
     res.json({ success: true, id: newUser._id });
   } catch (err) {
+    if (mongoose.connection.readyState !== 1) {
+      console.error('Registration database unavailable:', err.name || err.code || 'UnknownError');
+      return res.status(503).json({
+        success: false,
+        message: "Registration is temporarily unavailable because the database cannot be reached."
+      });
+    }
+
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "Username already taken" });
+    }
+
+    console.error('Registration error:', err.name || err.code || 'UnknownError');
     res.status(500).json({ message: "Registration failed" });
   }
 });
@@ -1008,7 +1078,7 @@ app.get('*', (req, res) => {
 
 // START SERVER (only for local development)
 if (require.main === module) {
-  const PORT = process.env.PORT || 5000;
+  const PORT = process.env.PORT || 5001;
   app.listen(PORT, () => {
     console.log(`✅ Server running on http://localhost:${PORT}`);
   });

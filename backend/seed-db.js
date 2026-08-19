@@ -1,21 +1,8 @@
 const mongoose = require("mongoose");
 const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
-
-// Connection to MongoDB
-const mongoUrl = (process.env.MONGODB_URI || "mongodb://localhost:27017/smart_medical_store")
-  .trim()
-  .replace(/^['"]|['"]$/g, '');
-
-mongoose.connect(mongoUrl, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => {
-    console.error("❌ MongoDB Connection Error:", err.message);
-    process.exit(1);
-  });
+const connectDB = require('./db/connection');
 
 // Define Schemas
 const userSchema = new mongoose.Schema({
@@ -48,33 +35,37 @@ const Medicine = mongoose.model("Medicine", medicineSchema);
 // Seed Data
 async function seedDatabase() {
   try {
-    // Clear existing data
-    await User.deleteMany({});
-    await Medicine.deleteMany({});
-    console.log("✅ Cleared existing data");
+    const userCount = await User.countDocuments();
+    if (userCount === 0) {
+      const users = await User.insertMany([
+        {
+          username: "admin",
+          password: "admin",
+          role: "admin",
+          name: "Admin User",
+          email: "admin@pharmaflow.com",
+          phone: "9876543210"
+        },
+        {
+          username: "staff",
+          password: "staff",
+          role: "staff",
+          name: "Staff Member",
+          email: "staff@pharmaflow.com",
+          phone: "9876543211"
+        }
+      ]);
+      console.log("✅ Users created:", users.length);
+    } else {
+      console.log("ℹ️ Users already exist; skipping user seed");
+    }
 
-    // Create Users
-    const users = await User.insertMany([
-      {
-        username: "admin",
-        password: "admin",
-        role: "admin",
-        name: "Admin User",
-        email: "admin@pharmaflow.com",
-        phone: "9876543210"
-      },
-      {
-        username: "staff",
-        password: "staff",
-        role: "staff",
-        name: "Staff Member",
-        email: "staff@pharmaflow.com",
-        phone: "9876543211"
-      }
-    ]);
-    console.log("✅ Users created:", users.length);
+    const medicineCount = await Medicine.countDocuments();
+    if (medicineCount > 0) {
+      console.log("ℹ️ Medicines already exist; skipping medicine seed");
+      return;
+    }
 
-    // Create Sample Medicines
     const medicines = await Medicine.insertMany([
       {
         name: "Aspirin",
@@ -164,12 +155,19 @@ async function seedDatabase() {
     console.log("Username: admin, Password: admin");
     console.log("Username: staff, Password: staff");
 
-    mongoose.connection.close();
   } catch (err) {
     console.error("❌ Error seeding database:", err.message);
-    mongoose.connection.close();
-    process.exit(1);
+    throw err;
   }
 }
 
-seedDatabase();
+async function main() {
+  try {
+    await connectDB();
+    await seedDatabase();
+  } finally {
+    await mongoose.disconnect();
+  }
+}
+
+main().catch(() => process.exitCode = 1);

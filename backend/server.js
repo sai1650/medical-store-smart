@@ -7,6 +7,7 @@ const fs = require('fs');
 require("dotenv").config({ path: path.join(__dirname, '.env') });
 require("dotenv").config({ path: path.join(__dirname, '..', '.env') });
 
+const connectDB = require('./db/connection');
 const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
@@ -153,78 +154,15 @@ app.use(express.static(frontendStatic));
 // Health endpoint
 app.get('/health', (req, res) => {
   res.set('Cache-Control', 'no-store');
-  res.json({
+  const databaseConnected = mongoose.connection.readyState === 1;
+  res.status(databaseConnected ? 200 : 503).json({
     status: 'ok',
+    database: databaseConnected ? 'connected' : 'disconnected',
     time: new Date().toISOString(),
     origin: req.get('origin') || null,
     allowedOrigins: Array.isArray(allowedOrigins) ? allowedOrigins : (allowedOrigins === true ? 'all' : null)
   });
 });
-
-function redactMongoUri(uri) {
-  if (!uri) return '(missing)';
-
-  return uri
-    .replace(/:\/\/([^:]+):([^@]+)@/, '://$1:***@')
-    .replace(/([?&][^=]+)=([^&]+)/g, '$1=***');
-}
-
-function validateMongoUri(uri) {
-  if (!uri) {
-    throw new Error('MONGODB_URI is missing');
-  }
-
-  if (!/^mongodb(\+srv)?:\/\//i.test(uri)) {
-    throw new Error('MONGODB_URI must start with mongodb:// or mongodb+srv://');
-  }
-
-  if (/[?&][^=]+=$/.test(uri) || /[?&][^=]+=&/.test(uri) || /[?&]$/.test(uri)) {
-    throw new Error('MONGODB_URI contains an option without a value');
-  }
-
-  return uri;
-}
-
-function normalizeMongoUri(uri) {
-  const cleaned = uri.trim().replace(/^['"]|['"]$/g, '');
-  const parsed = new URL(cleaned);
-  const params = new URLSearchParams(parsed.search);
-
-  for (const [key, value] of [...params.entries()]) {
-    if (!value || !value.trim()) {
-      params.delete(key);
-    }
-  }
-
-  parsed.search = params.toString() ? `?${params.toString()}` : '';
-  return parsed.toString();
-}
-
-// MongoDB Connection
-const mongoEnv = (process.env.MONGODB_URI || '').trim().replace(/^['"]|['"]$/g, '');
-if (!mongoEnv) {
-  console.warn('⚠️ MONGODB_URI not set. Skipping DB connection — some endpoints will be unavailable.');
-} else {
-  try {
-    const validatedMongoUrl = validateMongoUri(mongoEnv);
-    const normalizedMongoUrl = normalizeMongoUri(validatedMongoUrl);
-
-    (async () => {
-      try {
-        await mongoose.connect(normalizedMongoUrl);
-        console.log('✅ MongoDB connected successfully');
-      } catch (err) {
-        console.error('❌ MongoDB connection failed:', err.message);
-        console.error('Check that MONGODB_URI is a full Atlas connection string and that all options have values.');
-        // Do not exit; keep the server running so health and diagnostics remain available.
-      }
-    })();
-  } catch (err) {
-    console.error('❌ Invalid MONGODB_URI:', err.message);
-    console.error('Provided value:', redactMongoUri(mongoEnv));
-    // Continue without exiting so /health and CORS remain available to help debugging
-  }
-}
 
 // ==================== SCHEMAS ====================
 
@@ -1062,9 +1000,6 @@ app.get("/debug-attendance", async (req, res) => {
   }
 });
 
-// Seed after connection
-setTimeout(() => seedDatabase(), 1000);
-
 // ==================== CATCH-ALL ROUTES (MUST BE LAST) ====================
 // make root and all unmatched routes serve index.html for SPA
 app.get('/', (req, res) => {
@@ -1074,12 +1009,26 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(frontendStatic, 'index.html'));
 });
 
-// START SERVER (only for local development)
-if (require.main === module) {
+async function startServer() {
+  try {
+    await connectDB();
+    await seedDatabase();
+  } catch (error) {
+    if (error.code === 'MONGODB_URI_MISSING') {
+      console.error('❌ MONGODB_URI is missing. Database startup skipped.');
+    } else if (mongoose.connection.readyState !== 1) {
+      console.error('⚠️ Database unavailable. Server will start, but database endpoints will be unavailable.');
+    }
+  }
+
   const PORT = process.env.PORT || 5001;
-  app.listen(PORT, () => {
-    console.log(`✅ Server running on http://localhost:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server running on port ${PORT}`);
   });
+}
+
+if (require.main === module) {
+  startServer();
 }
 
 // Export for Vercel

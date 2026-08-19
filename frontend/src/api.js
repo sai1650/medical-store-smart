@@ -1,12 +1,13 @@
 const defaultOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5002';
-const fallbackBase = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : defaultOrigin);
+const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL;
+const fallbackBase = API_URL || (import.meta.env.DEV ? 'http://localhost:5002' : 'https://medical-store-smart.onrender.com');
 
 export const API_BASE = fallbackBase.replace(/\/$/, '');
 
 function buildApiBases() {
   const bases = [API_BASE];
   const localBase = 'http://localhost:5002';
-  const productionBase = 'https://smart-medical-store-backend.onrender.com';
+  const productionBase = 'https://medical-store-smart.onrender.com';
 
   if (!bases.includes(localBase)) bases.push(localBase);
   if (!bases.includes(productionBase)) bases.push(productionBase);

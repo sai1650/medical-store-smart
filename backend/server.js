@@ -208,16 +208,14 @@ if (!mongoEnv) {
   try {
     const validatedMongoUrl = validateMongoUri(mongoEnv);
     const normalizedMongoUrl = normalizeMongoUri(validatedMongoUrl);
-    console.log('ℹ️ MongoDB URI:', redactMongoUri(normalizedMongoUrl));
 
     (async () => {
       try {
         await mongoose.connect(normalizedMongoUrl);
-        console.log('✅ MongoDB Connected');
+        console.log('✅ MongoDB connected successfully');
       } catch (err) {
-        console.error('❌ MongoDB Connection Error:', err.message);
+        console.error('❌ MongoDB connection failed:', err.message);
         console.error('Check that MONGODB_URI is a full Atlas connection string and that all options have values.');
-        console.error('Parsed MongoDB URI:', redactMongoUri(normalizedMongoUrl));
         // Do not exit; keep the server running so health and diagnostics remain available.
       }
     })();

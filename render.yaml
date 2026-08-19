@@ -10,6 +10,18 @@ services:
         value: production
       - key: MONGODB_URI
         sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET_NAME
+        sync: false
+      - key: S3_URL_EXPIRATION
+        value: "3600"
+      - key: JWT_SECRET
+        sync: false
       - key: PORT
         value: 10000
       - key: FRONTEND_ORIGINS
